@@ -19,8 +19,6 @@
 #include <string.h> /* memcmp, memcpy */
 // Intentionally duplicated to tell you that the tests need memcpy, too.
 
-static void print_buf (const unsigned char* buf, unsigned long length);
-
 
 /* === ACTUAL FUNCTIONALITY ===
  * Only the symbol 'exposed_aes_ige_encrypt' needs to be exposed. */
@@ -28,20 +26,12 @@ static void print_buf (const unsigned char* buf, unsigned long length);
 // TODO: Use gcrypt's internal 'buf_xor'
 static void do_xor_block (const unsigned char *in, const unsigned char *with,
     unsigned char *out) {
-//  printf ("  in before: ");
-//  print_buf (in, 16);
-//  printf ("\nwith before: ");
-//  print_buf (with, 16);
-//  const unsigned char * const out_orig = out;
   for (int i = 0; i < 16; ++i) {
     *out = *in ^ *with;
     ++out;
     ++in;
     ++with;
   }
-//  printf ("\n out after:  ");
-//  print_buf (out_orig, 16);
-//  printf ("\n");
 }
 
 static gcry_error_t do_ige_encrypt (const unsigned char *in, unsigned char *out,
@@ -99,7 +89,6 @@ static gcry_error_t do_ige_decrypt (const unsigned char *in, unsigned char *out,
 gcry_error_t exposed_aes_ige_encrypt (const unsigned char *in,
     unsigned char *out, unsigned long length, const unsigned char *key,
     unsigned long key_length, unsigned char *ivec, const int enc) {
-//  printf ("[in progress]\n");
   if (length % 16) {
     return -3; // TODO: Which one?
   }
