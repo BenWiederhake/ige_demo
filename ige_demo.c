@@ -19,24 +19,40 @@
 #include <string.h> /* memcmp, memcpy */
 // Intentionally duplicated to tell you that the tests need memcpy, too.
 
+static void print_buf (const unsigned char* buf, unsigned long length);
+
+
 /* === ACTUAL FUNCTIONALITY ===
  * Only the symbol 'exposed_aes_ige_encrypt' needs to be exposed. */
 
 // TODO: Use gcrypt's internal 'buf_xor'
 static void do_xor_block (const unsigned char *in, const unsigned char *with,
     unsigned char *out) {
+//  printf ("  in before: ");
+//  print_buf (in, 16);
+//  printf ("\nwith before: ");
+//  print_buf (with, 16);
+//  const unsigned char * const out_orig = out;
   for (int i = 0; i < 16; ++i) {
     *out = *in ^ *with;
     ++out;
     ++in;
     ++with;
   }
+//  printf ("\n out after:  ");
+//  print_buf (out_orig, 16);
+//  printf ("\n");
 }
 
 static gcry_error_t do_ige_encrypt (const unsigned char *in, unsigned char *out,
     unsigned long n_blocks, gcry_cipher_hd_t cipher, unsigned char *ivec) {
-  const unsigned char *prev_x = ivec;
-  const unsigned char *prev_y = ivec + 16;
+  /* The docs say, at the end of section 2:
+   * "OpenSSL uses the convention that the first block of the IV is x_0
+   * and the second block is y_0."
+   * Well, no. This is a subtle error: FIRST comes the previous ENcrypted block,
+   * THEN the DEcrypted block. */
+  const unsigned char *prev_x = ivec + 16;
+  const unsigned char *prev_y = ivec;
   for (unsigned long i = 0; i < n_blocks; ++i) {
     do_xor_block (in, prev_y, out);
     gcry_error_t gcry_error = gcry_cipher_encrypt (cipher, out, 16, out, 16);
@@ -52,16 +68,16 @@ static gcry_error_t do_ige_encrypt (const unsigned char *in, unsigned char *out,
   if (n_blocks > 0) {
     /* OpenSSL updates the IV, so we do that, too.
      * One could avoid memcpy here, as it's only 16 bytes. */
-    memcpy (ivec, prev_x, 16);
-    memcpy (ivec + 16, prev_y, 16);
+    memcpy (ivec + 16, prev_x, 16);
+    memcpy (ivec, prev_y, 16);
   }
   return 0;
 }
 
 static gcry_error_t do_ige_decrypt (const unsigned char *in, unsigned char *out,
     unsigned long n_blocks, gcry_cipher_hd_t cipher, unsigned char *ivec) {
-  const unsigned char *prev_x = ivec;
-  const unsigned char *prev_y = ivec + 16;
+  const unsigned char *prev_x = ivec + 16;
+  const unsigned char *prev_y = ivec;
   for (unsigned long i = 0; i < n_blocks; ++i) {
     do_xor_block (in, prev_x, out);
     gcry_error_t gcry_error =
@@ -83,6 +99,7 @@ static gcry_error_t do_ige_decrypt (const unsigned char *in, unsigned char *out,
 gcry_error_t exposed_aes_ige_encrypt (const unsigned char *in,
     unsigned char *out, unsigned long length, const unsigned char *key,
     unsigned long key_length, unsigned char *ivec, const int enc) {
+//  printf ("[in progress]\n");
   if (length % 16) {
     return -3; // TODO: Which one?
   }
@@ -108,7 +125,10 @@ gcry_error_t exposed_aes_ige_encrypt (const unsigned char *in,
   if (gcry_error) {
     return gcry_error;
   }
-  gcry_cipher_setkey (cipher, key, key_length);
+  gcry_error = gcry_cipher_setkey (cipher, key, key_length);
+  if (gcry_error) {
+    return gcry_error;
+  }
 
   if (enc) {
     gcry_error = do_ige_encrypt(in, out, n_blocks, cipher, ivec);
@@ -120,6 +140,7 @@ gcry_error_t exposed_aes_ige_encrypt (const unsigned char *in,
 
   return gcry_error;
 }
+
 
 /* === HELPERS FOR TESTING === */
 
@@ -177,9 +198,55 @@ static void verify (const unsigned char* in, unsigned char* out,
   }
 }
 
+
 /* === ACTUAL TESTS === */
 
+void selftest_aes () {
+  printf ("selftest_aes\n");
+  /* http://csrc.nist.gov/publications/fips/fips197/fips-197.pdf
+   * Pages 42 and 43. */
+  unsigned char plaintext[] =
+    {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+     0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
+  unsigned char key[] =
+    {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+     0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+     0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+     0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f};
+  unsigned char ciphertext[] =
+    {0x8e, 0xa2, 0xb7, 0xca, 0x51, 0x67, 0x45, 0xbf,
+     0xea, 0xfc, 0x49, 0x90, 0x4b, 0x49, 0x60, 0x89};
+  unsigned char actual[] =
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  gcry_cipher_hd_t cipher;
+  gcry_error_t gcry_error =
+    gcry_cipher_open (&cipher, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_ECB, 0);
+  assert (!gcry_error);
+  gcry_error = gcry_cipher_setkey (cipher, key, 32);
+  assert (!gcry_error);
+
+  printf ("Encryption ... ");
+  gcry_error = gcry_cipher_encrypt (cipher, actual, 16, plaintext, 16);
+  if (gcry_error) {
+    printf ("failed with error: %d\n", gcry_error);
+    ++failures;
+  } else {
+    verify_buf (ciphertext, actual, 16);
+  }
+
+  printf ("Decryption ... ");
+  gcry_error = gcry_cipher_decrypt (cipher, actual, 16, ciphertext, 16);
+  if (gcry_error) {
+    printf ("failed with error: %d\n", gcry_error);
+    ++failures;
+  } else {
+    verify_buf (plaintext, actual, 16);
+  }
+}
+
 void test_vect_1 () {
+  printf ("test_vect_1\n");
   unsigned char key[] =
     {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
      0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
@@ -204,6 +271,7 @@ void test_vect_1 () {
 }
 
 void test_vect_2 () {
+  printf ("test_vect_2\n");
   /*
    * It says "This is an imple", "mentation of IGE mode for OpenSS",
    * and "L. Let's hope Ben got it right!\n", which seems to be an
@@ -233,6 +301,7 @@ void test_vect_2 () {
 }
 
 int main () {
+  selftest_aes ();
   test_vect_1 ();
   test_vect_2 ();
   printf("Had %d failure(s).\n", failures);
