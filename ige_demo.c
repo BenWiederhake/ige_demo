@@ -4,12 +4,13 @@
  * Creative Commons Public Domain Mark 1.0
  * ( https://creativecommons.org/publicdomain/mark/1.0/ )
  *
- * Compile: gcc ige_demo.c -lgcrypt -o ige_demo
+ * Compile: gcc ige_demo.c -crypto -lgcrypt -o ige_demo
  * Run: ./ige_demo
  */
 
 /* Needed for axctual functionality */
 #include <gcrypt.h>
+#include <openssl/aes.h>
 #include <string.h> /* memcpy; could be avoided */
 
 /* Needed for testing etc. */
@@ -23,111 +24,22 @@
 /* === ACTUAL FUNCTIONALITY ===
  * Only the symbol 'exposed_aes_ige_encrypt' needs to be exposed. */
 
-// TODO: Use gcrypt's internal 'buf_xor'
-static void do_xor_block (const unsigned char *in, const unsigned char *with,
-    unsigned char *out) {
-  for (int i = 0; i < 16; ++i) {
-    *out = *in ^ *with;
-    ++out;
-    ++in;
-    ++with;
-  }
-}
-
-static gcry_error_t do_ige_encrypt (const unsigned char *in, unsigned char *out,
-    unsigned long n_blocks, gcry_cipher_hd_t cipher, unsigned char *ivec) {
-  /* The docs say, at the end of section 2:
-   * "OpenSSL uses the convention that the first block of the IV is x_0
-   * and the second block is y_0."
-   * Well, no. This is a subtle error: FIRST comes the previous ENcrypted block,
-   * THEN the DEcrypted block. */
-  const unsigned char *prev_x = ivec + 16;
-  const unsigned char *prev_y = ivec;
-  for (unsigned long i = 0; i < n_blocks; ++i) {
-    do_xor_block (in, prev_y, out);
-    gcry_error_t gcry_error = gcry_cipher_encrypt (cipher, out, 16, out, 16);
-    if (gcry_error) {
-      return gcry_error;
-    }
-    do_xor_block (out, prev_x, out);
-    prev_x = in; // decrypted is in 'in'
-    prev_y = out; // encrypted is in 'out'
-    in += 16;
-    out += 16;
-  }
-  if (n_blocks > 0) {
-    /* OpenSSL updates the IV, so we do that, too.
-     * One could avoid memcpy here, as it's only 16 bytes. */
-    memcpy (ivec + 16, prev_x, 16);
-    memcpy (ivec, prev_y, 16);
-  }
-  return 0;
-}
-
-static gcry_error_t do_ige_decrypt (const unsigned char *in, unsigned char *out,
-    unsigned long n_blocks, gcry_cipher_hd_t cipher, unsigned char *ivec) {
-  const unsigned char *prev_x = ivec + 16;
-  const unsigned char *prev_y = ivec;
-  for (unsigned long i = 0; i < n_blocks; ++i) {
-    do_xor_block (in, prev_x, out);
-    gcry_error_t gcry_error =
-      gcry_cipher_decrypt (cipher, out, 16, out, 16);
-    if (gcry_error) {
-      return gcry_error;
-    }
-    do_xor_block (out, prev_y, out);
-    prev_x = out; // decrypted is in 'out'
-    prev_y = in; // encrypted is in 'in'
-    in += 16;
-    out += 16;
-  }
-  /* Do not change ivec */
-  return 0;
-}
-
 /* Needs to be given an IV of length 2*16. */
 gcry_error_t exposed_aes_ige_encrypt (const unsigned char *in,
     unsigned char *out, unsigned long length, const unsigned char *key,
     unsigned long key_length, unsigned char *ivec, const int enc) {
-  if (length % 16) {
-    return -3; // TODO: Which one?
-  }
-  unsigned long n_blocks = length / 16;
-
-  /* Set it up. */
-  gcry_cipher_hd_t cipher;
-  gcry_error_t gcry_error = -3; // TODO: Which one?
-  switch (key_length) {
-  case 16:
-    gcry_error =
-      gcry_cipher_open (&cipher, GCRY_CIPHER_AES128, GCRY_CIPHER_MODE_ECB, 0);
-    break;
-  case 24:
-    gcry_error =
-      gcry_cipher_open (&cipher, GCRY_CIPHER_AES192, GCRY_CIPHER_MODE_ECB, 0);
-    break;
-  case 32:
-    gcry_error =
-      gcry_cipher_open (&cipher, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_ECB, 0);
-    break;
-  }
-  if (gcry_error) {
-    return gcry_error;
-  }
-  gcry_error = gcry_cipher_setkey (cipher, key, key_length);
-  if (gcry_error) {
-    return gcry_error;
-  }
-
+  AES_KEY key_;
+  int err;
   if (enc) {
-    gcry_error = do_ige_encrypt(in, out, n_blocks, cipher, ivec);
+      err = AES_set_encrypt_key (key, key_length * 8, &key_);
   } else {
-    gcry_error = do_ige_decrypt(in, out, n_blocks, cipher, ivec);
+      err = AES_set_decrypt_key (key, key_length * 8, &key_);
   }
+  assert (!err);
 
-  gcry_cipher_close(cipher);
+  AES_ige_encrypt(in, out, length, &key_, ivec, enc);
 
-  return gcry_error;
+  return 0;
 }
 
 
